@@ -2,6 +2,7 @@ import socket
 import json
 import sys
 import pathlib
+import threading
 from shutil import rmtree, copy
 from email.parser import Parser
 
@@ -75,23 +76,13 @@ class HTTPServer:
             while True:
                 conn, _ = serv_sock.accept()
                 try:
-                    self.serve_client(conn)
+                    thread = threading.Thread(target=self.serve_client, args=(conn))
+                    thread.setDaemon(True)
+                    thread.start()
                 except Exception as e:
                     print('Client serving failed', e)
         finally:
             serv_sock.close()
-
-    def listenForConn(self):
-
-        while True:
-            # Establish the connection
-            conn_sock, _ = self.server_socket.accept() 
-
-            # Create new thread
-            # thread = threading.Thread(target=, args=(connet, client_addr))
-            thread.setDaemon(True)
-            thread.start()
-        self.shutdown()
 
     def serve_client(self, conn):
         try:
@@ -115,7 +106,7 @@ class HTTPServer:
 
         if not host:
             raise HTTPError(400, 'Bad request',
-                b'Host header is missing')
+                'Host header is missing')
         if host not in (self._server_name,
                         f'{self._host}:{self._port}'):
             raise HTTPError(404, 'Not found')
@@ -126,17 +117,17 @@ class HTTPServer:
         raw = rfile.readline(MAX_LINE + 1)
         if len(raw) > MAX_LINE:
             raise HTTPError(400, 'Bad request',
-                b'Request line is too long')
+                'Request line is too long')
 
         req_line = str(raw, 'iso-8859-1')
         words = req_line.split()
         if len(words) != 3:
             raise HTTPError(400, 'Bad request',
-                b'Malformed request line')
+                'Malformed request line')
 
         method, target, ver = words
         if ver != 'HTTP/1.1':
-            raise HTTPError(505, b'HTTP Version Not Supported')
+            raise HTTPError(505, 'HTTP Version Not Supported')
         return method, target, ver
 
     def parse_headers(self, rfile):
@@ -144,7 +135,7 @@ class HTTPServer:
         while True:
             line = rfile.readline(MAX_LINE + 1)
             if len(line) > MAX_LINE:
-                raise HTTPError(400, 'Bad request',b'Header line is too long')
+                raise HTTPError(400, 'Bad request','Header line is too long')
 
             if line in (b'\r\n', b'\n', b''):
                 # завершаем чтение заголовков
@@ -152,7 +143,7 @@ class HTTPServer:
 
             headers.append(line)
             if len(headers) > MAX_HEADERS:
-                raise HTTPError(400, 'Bad request',b'Too many headers')
+                raise HTTPError(400, 'Bad request','Too many headers')
 
         sheaders = b''.join(headers).decode('iso-8859-1')
         return Parser().parsestr(sheaders)
@@ -194,8 +185,8 @@ class HTTPServer:
     def send_error(self, conn, err):
         try:
             status = err.status
-            reason = err.reason.encode('utf-8')
-            body = (err.body or err.reason)
+            reason = err.reason
+            body = (err.body or err.reason).encode('iso-8859-1')
         except:
             status = 500
             reason = b'Internal Server Error'
@@ -237,7 +228,7 @@ class HTTPServer:
 
             return Response(200, 'OK', headers, body)
         else:
-            body = f'Incorrect Path: {path}'.encode('iso-8859-1')
+            body = f'Incorrect Path: {path}'
             raise HTTPError(404, 'Not found', body)
 
 
@@ -255,7 +246,7 @@ class HTTPServer:
                 f.write(content)
                 body = b'File uploaded'
             except Exception as ex:
-                body = f'Exception raised during file uploading'.encode('iso-8859-1')
+                body = f'Exception raised during file uploading'
                 raise HTTPError(500,'Internal Server Error', body)
             finally:
                 f.close()
@@ -301,7 +292,7 @@ class HTTPServer:
                 body = b'Folder Not Found'
                 return Response(404, 'Not Found', [('Content-Length', len(body))], body)
         else:
-            body = f'Incorrect Path: {path}'.encode('iso-8859-1')
+            body = f'Incorrect Path: {path}'
             raise HTTPError(404, 'Not found', body)   
 
     def delete_req(self, request):
@@ -316,7 +307,7 @@ class HTTPServer:
 
                 body = f'Deleted'.encode('iso-8859-1')
             except Exception as ex:
-                body = f'Exception raised {ex}'.encode('iso-8859-1')
+                body = f'Exception raised {ex}'
                 raise HTTPError(500,'Internal Server Error', body)
 
             return Response(200, 'OK', [('Content-Length', len(body))], body)
