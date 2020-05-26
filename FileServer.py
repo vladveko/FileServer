@@ -2,10 +2,8 @@ import socket
 import json
 import sys
 import pathlib
-from shutil import rmtree
+from shutil import rmtree, copy
 from email.parser import Parser
-from functools import lru_cache
-from urllib.parse import parse_qs, urlparse
 
 MAX_LINE = 64*1024
 MAX_HEADERS = 100
@@ -103,7 +101,7 @@ class HTTPServer:
         except ConnectionResetError:
             conn = None
         except Exception as e:
-            send_error(conn, e)
+            self.send_error(conn, e)
 
         if conn:
             req.rfile.close()
@@ -117,7 +115,7 @@ class HTTPServer:
 
         if not host:
             raise HTTPError(400, 'Bad request',
-                'Host header is missing')
+                b'Host header is missing')
         if host not in (self._server_name,
                         f'{self._host}:{self._port}'):
             raise HTTPError(404, 'Not found')
@@ -128,17 +126,17 @@ class HTTPServer:
         raw = rfile.readline(MAX_LINE + 1)
         if len(raw) > MAX_LINE:
             raise HTTPError(400, 'Bad request',
-                'Request line is too long')
+                b'Request line is too long')
 
         req_line = str(raw, 'iso-8859-1')
         words = req_line.split()
         if len(words) != 3:
             raise HTTPError(400, 'Bad request',
-                'Malformed request line')
+                b'Malformed request line')
 
         method, target, ver = words
         if ver != 'HTTP/1.1':
-            raise HTTPError(505, 'HTTP Version Not Supported')
+            raise HTTPError(505, b'HTTP Version Not Supported')
         return method, target, ver
 
     def parse_headers(self, rfile):
@@ -146,7 +144,7 @@ class HTTPServer:
         while True:
             line = rfile.readline(MAX_LINE + 1)
             if len(line) > MAX_LINE:
-                raise HTTPError(400, 'Bad request','Header line is too long')
+                raise HTTPError(400, 'Bad request',b'Header line is too long')
 
             if line in (b'\r\n', b'\n', b''):
                 # завершаем чтение заголовков
@@ -154,7 +152,7 @@ class HTTPServer:
 
             headers.append(line)
             if len(headers) > MAX_HEADERS:
-                raise HTTPError(400, 'Bad request','Too many headers')
+                raise HTTPError(400, 'Bad request',b'Too many headers')
 
         sheaders = b''.join(headers).decode('iso-8859-1')
         return Parser().parsestr(sheaders)
@@ -164,7 +162,10 @@ class HTTPServer:
             return self.get_req(request)
 
         elif request.method == 'PUT':
-            return self.put_req(request)
+            if request.headers.get('X-Copy-From'):
+                return self.copy_req(request)
+            else:
+                return self.put_req(request)
 
         elif request.method == 'HEAD':
             return self.head_req(request)
@@ -193,15 +194,16 @@ class HTTPServer:
     def send_error(self, conn, err):
         try:
             status = err.status
-            reason = err.reason
-            body = (err.body or err.reason).encode('utf-8')
+            reason = err.reason.encode('utf-8')
+            body = (err.body or err.reason)
         except:
             status = 500
             reason = b'Internal Server Error'
             body = b'Internal Server Error'
-            resp = Response(status, reason,
-                        [('Content-Length', len(body))],
-                        body)
+        
+        resp = Response(status, reason,
+                    [('Content-Length', len(body))],
+                    body)
 
         self.send_response(conn, resp)
 
@@ -213,9 +215,9 @@ class HTTPServer:
                 f = open(path,'rb')
                 body = f.read()
 
-                headers = [('Content-Length',len(body))
+                headers = [('Content-Length',len(body)),
                         ('Content-Type', CONT_TYPE.get(path.suffix)),
-                        ('Content-Disposition: attachment; filename="newfile"')]
+                        ('Content-Disposition',f'attachment; filename="newfile{path.suffix}"')]
 
             else:
                 files = []
@@ -229,13 +231,13 @@ class HTTPServer:
                 to_json = {'files': files, 'folders': folders}
                 body = json.dumps(to_json).encode('iso-8859-1')
 
-                headers = [('Content-Length',len(body))
+                headers = [('Content-Length',len(body)),
                         ('Content-Type', CONT_TYPE.get(".json")),
-                        ('Content-Disposition: attachment; filename="newfile"')]
+                        ('Content-Disposition','inline')]
 
-            return Response(200, 'OK',headers, body)
+            return Response(200, 'OK', headers, body)
         else:
-            body = b'Incorrect Path'
+            body = f'Incorrect Path: {path}'.encode('iso-8859-1')
             raise HTTPError(404, 'Not found', body)
 
 
@@ -243,36 +245,47 @@ class HTTPServer:
         path = pathlib.Path(request.path)
         content = request.body()
 
-        # if path.exists():
-            new_folder = path.parent
-            if not new_folder.exists():
-                new_folder.mkdir(parents=True)
+        new_folder = path.parent
+        if not new_folder.exists():
+            new_folder.mkdir(parents=True)
 
+        if not path.is_dir:
             try:
                 f = open(path, 'wb')
                 f.write(content)
                 body = b'File uploaded'
             except Exception as ex:
-                body = f'Exception raised {ex}'.encode('iso-8859-1')
+                body = f'Exception raised during file uploading'.encode('iso-8859-1')
                 raise HTTPError(500,'Internal Server Error', body)
             finally:
                 f.close()
+        else:
+            body = b'Empty Folder Created'        
+    
+        return Response(201, 'Created',[('Content-Length', len(body))], body)    
 
-        # else:
-        #     new_folder = path.parent
-        #     if not new_folder.exists():
-        #         new_folder.mkdir(parents=True)
+    def copy_req(self, request):
+        new_path = pathlib.Path(request.path)
+        copy_from = pathlib.Path(request.headers.get('X-Copy-From'))
 
-        #     try:
-        #         new_f = open(path, 'wb') 
-        #         new_f.write(content)
-        #         body = b'File uploaded'
-        #     except Exception as ex:
-        #         body = f'Exception raised {ex}'.encode('iso-8859-1')
-        #     finally:
-        #         new_f.close()
-            
-        return Response(201, 'Created',[('Content-Length', len(body))], body)
+        if copy_from.exists():
+            try:
+                if new_path.is_dir():
+                    new_folder = new_path
+                else:
+                    new_folder = new_path.parent
+
+                if not new_folder.exists():
+                    new_folder.mkdir(parents=True)
+
+                copy(copy_from, new_path)
+            except Exception as ex:
+                raise HTTPError(406, 'Not Acceptable')
+        else:
+            raise HTTPError(404, 'Not Found')
+
+        return Response(200, 'OK', [('Content-Length', len('Copied'))], b'Copied')
+
 
     def head_req(self, request):
         path = pathlib.Path(request.path)
@@ -281,14 +294,14 @@ class HTTPServer:
             if path.is_file():
                 headers = [('Content-Length', path.stat().st_stat),
                             ('Content-Type', CONT_TYPE.get(path.suffix)),
-                            ('Content-Disposition: attachment; filename="newfile"')]
+                            ('Content-Disposition','attachment, filename="newfile"')]
 
                 return Response(200, 'OK',headers)
             else:
                 body = b'Folder Not Found'
                 return Response(404, 'Not Found', [('Content-Length', len(body))], body)
         else:
-            body = b'Incorrect Path'
+            body = f'Incorrect Path: {path}'.encode('iso-8859-1')
             raise HTTPError(404, 'Not found', body)   
 
     def delete_req(self, request):
