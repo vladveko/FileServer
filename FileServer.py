@@ -76,9 +76,10 @@ class HTTPServer:
             while True:
                 conn, _ = serv_sock.accept()
                 try:
-                    thread = threading.Thread(target=self.serve_client, args=(conn))
-                    thread.setDaemon(True)
-                    thread.start()
+                    self.serve_client(conn)
+                    # thread = threading.Thread(target=self.serve_client, args=(conn,))
+                    # thread.setDaemon(True)
+                    # thread.start()
                 except Exception as e:
                     print('Client serving failed', e)
         finally:
@@ -220,7 +221,7 @@ class HTTPServer:
                         folders.append(item.name)
 
                 to_json = {'files': files, 'folders': folders}
-                body = json.dumps(to_json).encode('iso-8859-1')
+                body = json.dumps(to_json, indent=4, sort_keys=True).encode('iso-8859-1')
 
                 headers = [('Content-Length',len(body)),
                         ('Content-Type', CONT_TYPE.get(".json")),
@@ -240,7 +241,7 @@ class HTTPServer:
         if not new_folder.exists():
             new_folder.mkdir(parents=True)
 
-        if not path.is_dir:
+        if not path.is_dir():
             try:
                 f = open(path, 'wb')
                 f.write(content)
@@ -283,9 +284,9 @@ class HTTPServer:
 
         if path.exists():
             if path.is_file():
-                headers = [('Content-Length', path.stat().st_stat),
+                headers = [('Content-Length', path.stat().st_size),
                             ('Content-Type', CONT_TYPE.get(path.suffix)),
-                            ('Content-Disposition','attachment, filename="newfile"')]
+                            ('Content-Disposition',f'attachment; filename="newfile{path.suffix}"')]
 
                 return Response(200, 'OK',headers)
             else:
